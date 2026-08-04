@@ -1,0 +1,124 @@
+# Tests for the fuzzy package - offline, deterministic (no ai/fs/net).
+#
+# The numbers here are the published reference values for each algorithm, not
+# whatever this implementation happened to produce. MARTHA/MARHTA and
+# DIXON/DICKSONX are the pairs Winkler used in the original papers, and they
+# are the ones that catch a transposition or prefix bug.
+import std.test
+import "../main.ecko"
+f = main
+
+# Similarities are floats, so compare within a tolerance rather than exactly.
+fn close(actual, expected) {
+    diff = actual - expected
+    if diff < 0.0 { 0.0 - diff < 0.0001 } else { diff < 0.0001 }
+}
+
+# --- Levenshtein --------------------------------------------------------------
+
+test.case("levenshtein counts single-character edits", fn() {
+    test.eq(f.levenshtein("kitten", "sitting"), 3)
+    test.eq(f.levenshtein("flaw", "lawn"), 2)
+    test.eq(f.levenshtein("saturday", "sunday"), 3)
+    test.eq(f.levenshtein("", ""), 0)
+    test.eq(f.levenshtein("abc", ""), 3)
+    test.eq(f.levenshtein("", "abc"), 3)
+    test.eq(f.levenshtein("same", "same"), 0)
+})
+
+test.case("levenshtein is symmetric", fn() {
+    test.eq(f.levenshtein("kitten", "sitting"), f.levenshtein("sitting", "kitten"))
+})
+
+test.case("ratio normalises a distance to 0..1", fn() {
+    test.ok(close(f.ratio("same", "same"), 1.0), "identical is 1.0")
+    test.ok(close(f.ratio("", ""), 1.0), "two empties are identical")
+    test.ok(close(f.ratio("abc", "xyz"), 0.0), "nothing shared is 0.0")
+    # kitten/sitting: 3 edits over the longer length of 7.
+    test.ok(close(f.ratio("kitten", "sitting"), 1.0 - 3.0 / 7.0), "kitten/sitting")
+})
+
+# --- Hamming ------------------------------------------------------------------
+
+test.case("hamming counts differing positions, and needs equal lengths", fn() {
+    test.eq(f.hamming("karolin", "kathrin"), 3)
+    test.eq(f.hamming("1011101", "1001001"), 2)
+    caught = try { f.hamming("abc", "ab") } catch (e) { get(e, "kind") }
+    test.eq(caught, "fuzzy")
+})
+
+# --- Jaro and Jaro-Winkler ----------------------------------------------------
+
+test.case("jaro matches the published reference values", fn() {
+    test.ok(close(f.jaro("MARTHA", "MARHTA"), 0.944444), "MARTHA/MARHTA")
+    test.ok(close(f.jaro("DWAYNE", "DUANE"), 0.822222), "DWAYNE/DUANE")
+    test.ok(close(f.jaro("DIXON", "DICKSONX"), 0.766667), "DIXON/DICKSONX")
+    test.ok(close(f.jaro("", ""), 1.0), "two empties")
+    test.ok(close(f.jaro("abc", ""), 0.0), "one empty")
+    test.ok(close(f.jaro("same", "same"), 1.0), "identical")
+})
+
+test.case("jaro_winkler boosts a shared prefix", fn() {
+    test.ok(close(f.jaro_winkler("MARTHA", "MARHTA"), 0.961111), "MARTHA/MARHTA")
+    test.ok(close(f.jaro_winkler("DWAYNE", "DUANE"), 0.84), "DWAYNE/DUANE")
+    test.ok(close(f.jaro_winkler("DIXON", "DICKSONX"), 0.813333), "DIXON/DICKSONX")
+})
+
+test.case("the prefix bonus is capped at four characters", fn() {
+    # Beyond four the boost must stop growing, or long common prefixes would
+    # drive every score to 1.0.
+    a = f.jaro_winkler("abcdefgh", "abcdefzz")
+    b = f.jaro_winkler("abcdxfgh", "abcdxfzz")
+    test.ok(close(a, b), "a fifth shared character adds nothing: {a} vs {b}")
+})
+
+# --- set-based measures -------------------------------------------------------
+
+test.case("dice compares bigrams", fn() {
+    # night/nacht: bigrams ni,ig,gh,ht and na,ac,ch,ht share only "ht".
+    test.ok(close(f.dice("night", "nacht"), 0.25), "night/nacht")
+    test.ok(close(f.dice("same", "same"), 1.0), "identical")
+    test.ok(close(f.dice("abc", "xyz"), 0.0), "disjoint")
+    # A single character has no bigrams at all.
+    test.ok(close(f.dice("a", "a"), 1.0), "single identical char")
+    test.ok(close(f.dice("a", "b"), 0.0), "single differing char")
+})
+
+test.case("jaccard is the overlap of character sets", fn() {
+    # "night" -> {n,i,g,h,t}, "nacht" -> {n,a,c,h,t}; 3 shared of 7 distinct.
+    test.ok(close(f.jaccard("night", "nacht"), 3.0 / 7.0), "night/nacht")
+    test.ok(close(f.jaccard("abc", "abc"), 1.0), "identical")
+    test.ok(close(f.jaccard("", ""), 1.0), "two empties")
+})
+
+# --- selection ----------------------------------------------------------------
+
+test.case("best_match picks the closest candidate", fn() {
+    options = ["apple", "apricot", "banana", "grape"]
+    best = f.best_match("appel", options)
+    test.eq(best.value, "apple")
+    test.ok(best.score > 0.7, "a good score, got {best.score}")
+})
+
+test.case("best_match returns null for an empty candidate list", fn() {
+    test.eq(f.best_match("x", []), null)
+})
+
+test.case("top_matches ranks and truncates", fn() {
+    options = ["apple", "apricot", "banana", "grape", "maple"]
+    top = f.top_matches("appel", options, 3)
+    test.eq(len(top), 3)
+    test.eq(first(top).value, "apple")
+    # Descending by score.
+    for i in 0..len(top) - 1 {
+        test.ok(top[i].score >= top[i + 1].score, "ranked descending")
+    }
+})
+
+test.case("a custom scorer changes the ranking", fn() {
+    options = ["MARHTA", "MARTIAN"]
+    # Jaro-Winkler rewards the transposition-heavy MARHTA; raw edit distance
+    # does not, so the two scorers disagree and that is the point.
+    by_jw = f.best_match_by("MARTHA", options, f.jaro_winkler)
+    test.eq(by_jw.value, "MARHTA")
+})

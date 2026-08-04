@@ -1,0 +1,63 @@
+# fuzzy - the four measures disagree, and that is the point.
+#
+#   ecko example.ecko
+
+import "./main.ecko" as fuzzy
+
+fn pad(text, width) {
+    mut out = string(text)
+    while len(out) < width {
+        out = out + " "
+    }
+    out
+}
+
+fn show(a, b) {
+    print(
+        "  " +
+            pad(a, 10) +
+            pad(b, 11) +
+            pad(fuzzy.levenshtein(a, b), 6) +
+            pad(round(fuzzy.ratio(a, b) * 1000.0) / 1000.0, 8) +
+            pad(round(fuzzy.jaro_winkler(a, b) * 1000.0) / 1000.0, 8) +
+            pad(round(fuzzy.dice(a, b) * 1000.0) / 1000.0, 8) +
+            string(round(fuzzy.jaccard(a, b) * 1000.0) / 1000.0),
+    )
+}
+
+print(
+    "  " +
+        pad("a", 10) +
+        pad("b", 11) +
+        pad("lev", 6) +
+        pad("ratio", 8) +
+        pad("jaro-w", 8) +
+        pad("dice", 8) +
+        "jaccard",
+)
+print("  " + "-" * 57)
+show("kitten", "sitting")
+show("MARTHA", "MARHTA")
+show("DWAYNE", "DUANE")
+show("night", "nacht")
+show("apple", "appel")
+show("abc", "xyz")
+print("")
+print("  MARTHA/MARHTA is two edits apart, but Jaro-Winkler scores it 0.961:")
+print("  a transposition early in a short word is almost always a typo.")
+print("")
+
+# --- picking a correction -----------------------------------------------------
+
+commands = ["install", "uninstall", "init", "info", "index", "invoke"]
+print("did you mean...")
+for typo in ["instal", "inti", "ino", "unistall"] {
+    best = fuzzy.best_match(typo, commands)
+    print("  {typo} -> {best.value} ({round(best.score * 100.0) / 100.0})")
+}
+print("")
+
+print("top 3 for 'instal':")
+for hit in fuzzy.top_matches("instal", commands, 3) {
+    print("  {hit.value} ({round(hit.score * 100.0) / 100.0})")
+}

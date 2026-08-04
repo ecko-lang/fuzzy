@@ -1,0 +1,243 @@
+# fuzzy - how alike are two strings?
+#
+# Four measures, because they disagree in useful ways:
+#
+#   levenshtein  edit distance - how many single-character changes
+#   jaro_winkler tuned for short strings and typos, rewards a shared prefix
+#   dice         bigram overlap - good for names and titles
+#   jaccard      character-set overlap - order-blind, cheapest
+#
+# Pick by what "similar" means for your data. Levenshtein says MARTHA and
+# MARHTA are two edits apart; Jaro-Winkler scores them 0.96 because a
+# transposition near the start of a short word is almost certainly a typo.
+#
+#   import fuzzy
+#
+#   fuzzy.ratio("kitten", "sitting")            # 0.571...
+#   fuzzy.jaro_winkler("MARTHA", "MARHTA")      # 0.961...
+#   fuzzy.best_match("appel", ["apple", "grape"])
+#   # { value: "apple", score: 0.9466... }
+#
+# Pure computation - no capabilities.
+
+## The error raised for inputs an algorithm cannot accept.
+export fn fail(message) {
+    error({ kind: "fuzzy", message: message })
+}
+
+## The larger of two numbers.
+export fn max2(a, b) = if a > b { a } else { b }
+
+## The smaller of two numbers.
+export fn min2(a, b) = if a < b { a } else { b }
+
+# --- edit distance ------------------------------------------------------------
+
+## The Levenshtein distance: the fewest single-character insertions, deletions
+## or substitutions that turn `a` into `b`.
+##
+## Computed with two rows rather than the full matrix, so the memory cost is
+## the length of the shorter string rather than the product of both.
+export fn levenshtein(a, b) {
+    x = chars(a)
+    y = chars(b)
+    if len(x) == 0 { return len(y) }
+    if len(y) == 0 { return len(x) }
+
+    # Row 0 is the cost of deleting every character of `x` in turn.
+    mut prev = []
+    for j in 0..len(y) + 1 {
+        prev = push(prev, j)
+    }
+
+    for i in 0..len(x) {
+        mut row = [i + 1]
+        for j in 0..len(y) {
+            cost = if x[i] == y[j] { 0 } else { 1 }
+            row = push(row, min2(min2(row[j] + 1, prev[j + 1] + 1), prev[j] + cost))
+        }
+        prev = row
+    }
+    last(prev)
+}
+
+## Levenshtein distance normalised to 0.0 (nothing in common) through 1.0
+## (identical), against the longer of the two strings.
+export fn ratio(a, b) {
+    longest = max2(len(chars(a)), len(chars(b)))
+    if longest == 0 { return 1.0 }
+    1.0 - float(levenshtein(a, b)) / float(longest)
+}
+
+## The Hamming distance: how many positions differ. Both strings must be the
+## same length, which is the whole premise of the measure.
+export fn hamming(a, b) {
+    x = chars(a)
+    y = chars(b)
+    unless len(x) == len(y) { fail("hamming needs equal lengths, got {len(x)} and {len(y)}") }
+    mut d = 0
+    for i in 0..len(x) {
+        unless x[i] == y[i] { d = d + 1 }
+    }
+    d
+}
+
+# --- Jaro and Jaro-Winkler ----------------------------------------------------
+
+## The Jaro similarity, 0.0 to 1.0.
+##
+## Two characters count as matching only if they are the same and fall within
+## `max(len_a, len_b) / 2 - 1` positions of each other; a transposition is a
+## matched pair that arrived out of order, and counts half.
+export fn jaro(a, b) {
+    x = chars(a)
+    y = chars(b)
+    if len(x) == 0 and len(y) == 0 { return 1.0 }
+    if len(x) == 0 or len(y) == 0 { return 0.0 }
+
+    window = max2(max2(len(x), len(y)) / 2 - 1, 0)
+    mut x_hit = map(x, fn(_) false)
+    mut y_hit = map(y, fn(_) false)
+
+    mut matches = 0
+    for i in 0..len(x) {
+        lo = max2(0, i - window)
+        hi = min2(i + window + 1, len(y))
+        mut j = lo
+        while j < hi {
+            if y_hit[j] == false and x[i] == y[j] {
+                x_hit = set(x_hit, i, true)
+                y_hit = set(y_hit, j, true)
+                matches = matches + 1
+                j = hi
+            } else { j = j + 1 }
+        }
+    }
+    if matches == 0 { return 0.0 }
+
+    # Walk both hit lists in order; each mismatched pair is one transposition.
+    mut transpositions = 0
+    mut k = 0
+    for i in 0..len(x) {
+        if x_hit[i] {
+            while k < len(y_hit) and y_hit[k] == false {
+                k = k + 1
+            }
+            unless x[i] == y[k] { transpositions = transpositions + 1 }
+            k = k + 1
+        }
+    }
+    m = float(matches)
+    t = float(transpositions / 2)
+    (m / float(len(x)) + m / float(len(y)) + (m - t) / m) / 3.0
+}
+
+## The Jaro-Winkler similarity: Jaro, boosted for strings that share a prefix.
+##
+## The prefix counts at most four characters, and the boost only applies to
+## already-similar strings. Without the cap a long shared prefix would drag
+## every comparison toward 1.0.
+export fn jaro_winkler(a, b) {
+    base = jaro(a, b)
+    # Winkler's original threshold: below this the strings are too different
+    # for a shared prefix to mean anything.
+    if base < 0.7 { return base }
+    x = chars(a)
+    y = chars(b)
+    limit = min2(4, min2(len(x), len(y)))
+    mut prefix = 0
+    mut i = 0
+    while i < limit and x[i] == y[i] {
+        prefix = prefix + 1
+        i = i + 1
+    }
+    base + float(prefix) * 0.1 * (1.0 - base)
+}
+
+# --- set-based measures -------------------------------------------------------
+
+## The bigrams of a string: every adjacent character pair.
+export fn bigrams(s) {
+    cs = chars(s)
+    if len(cs) < 2 { return [] }
+    mut out = []
+    for i in 0..len(cs) - 1 {
+        out = push(out, cs[i] + cs[i + 1])
+    }
+    out
+}
+
+## The Sorensen-Dice coefficient over bigrams, 0.0 to 1.0. Good for names and
+## titles, where word order varies but letter pairs persist.
+export fn dice(a, b) {
+    if a == b { return 1.0 }
+    x = bigrams(a)
+    y = bigrams(b)
+    # Strings shorter than two characters have no bigrams, so fall back to
+    # equality rather than dividing by zero.
+    if len(x) == 0 or len(y) == 0 { return 0.0 }
+    mut remaining = y
+    mut shared = 0
+    for g in x {
+        idx = index_of(remaining, g)
+        if idx >= 0 {
+            shared = shared + 1
+            remaining = remove(remaining, idx)
+        }
+    }
+    2.0 * float(shared) / float(len(x) + len(y))
+}
+
+## The Jaccard index over character sets: shared characters over distinct
+## characters. Order-blind and the cheapest of the four.
+export fn jaccard(a, b) {
+    x = unique(chars(a))
+    y = unique(chars(b))
+    if len(x) == 0 and len(y) == 0 { return 1.0 }
+    shared = len(filter(x, fn(c) contains(y, c)))
+    union = len(unique(x + y))
+    if union == 0 { return 1.0 }
+    float(shared) / float(union)
+}
+
+# --- selection ----------------------------------------------------------------
+
+## The closest candidate to `needle`, as `{ value, score }`, or null when there
+## are no candidates. Scored with Jaro-Winkler, which suits the typo-correction
+## case this is usually reached for.
+export fn best_match(needle, candidates) {
+    best_match_by(needle, candidates, jaro_winkler)
+}
+
+## `best_match` with the scorer of your choice - any `fn(a, b) -> float`.
+export fn best_match_by(needle, candidates, scorer) {
+    if len(candidates) == 0 { return null }
+    mut best = scored(first(candidates), scorer(needle, first(candidates)))
+    for c in candidates {
+        s = scorer(needle, c)
+        if s > best.score { best = scored(c, s) }
+    }
+    best
+}
+
+## The `limit` closest candidates, best first, as `{ value, score }` records.
+export fn top_matches(needle, candidates, limit) {
+    top_matches_by(needle, candidates, limit, jaro_winkler)
+}
+
+## One scored candidate. A named function because `fn(c) { value: ... }` would
+## parse its brace as a block rather than a map literal.
+export fn scored(value, score) {
+    { value: value, score: score }
+}
+
+## `top_matches` with the scorer of your choice.
+export fn top_matches_by(needle, candidates, limit, scorer) {
+    scored_all = map(candidates, fn(c) scored(c, scorer(needle, c)))
+    # Descending by score, said directly rather than by sorting on a negated key.
+    ranked = sort_with(
+        scored_all,
+        fn(a, b) if a.score > b.score { -1 } else { if a.score < b.score { 1 } else { 0 } },
+    )
+    take(ranked, min2(limit, len(ranked)))
+}
