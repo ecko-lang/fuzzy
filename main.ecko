@@ -21,7 +21,7 @@
 # Pure computation - no capabilities.
 
 ## The error raised for inputs an algorithm cannot accept.
-export fn fail(message) {
+fn fail(message) {
     error({ kind: "fuzzy", message: message })
 }
 
