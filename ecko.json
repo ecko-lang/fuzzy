@@ -1,6 +1,6 @@
 {
   "module": "github.com/ecko-lang/fuzzy",
-  "version": "0.30.0",
+  "version": "0.37.0",
   "entrypoint": "main.ecko",
   "description": "String similarity: Levenshtein, Jaro-Winkler, Dice and Jaccard, plus best-match selection over a list. Pure - no capabilities.",
   "author": "Sean Nieuwoudt <sean@underwulf.com>",
