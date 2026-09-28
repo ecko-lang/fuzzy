@@ -87,7 +87,7 @@ export fn hamming(a, b) {
 ## The Jaro similarity, 0.0 to 1.0.
 ##
 ## Two characters count as matching only if they are the same and fall within
-## `max(len_a, len_b) / 2 - 1` positions of each other; a transposition is a
+## `max(len_a, len_b) // 2 - 1` positions of each other; a transposition is a
 ## matched pair that arrived out of order, and counts half.
 export fn jaro(a, b) {
     x = chars(a)
@@ -95,7 +95,7 @@ export fn jaro(a, b) {
     if len(x) == 0 and len(y) == 0 { return 1.0 }
     if len(x) == 0 or len(y) == 0 { return 0.0 }
 
-    window = max2(max2(len(x), len(y)) / 2 - 1, 0)
+    window = max2(max2(len(x), len(y)) // 2 - 1, 0)
     mut x_hit = map(x, fn(_) false)
     mut y_hit = map(y, fn(_) false)
 
@@ -128,7 +128,7 @@ export fn jaro(a, b) {
         }
     }
     m = float(matches)
-    t = float(transpositions / 2)
+    t = float(transpositions // 2)
     (m / float(len(x)) + m / float(len(y)) + (m - t) / m) / 3.0
 }
 
